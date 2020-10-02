@@ -1,46 +1,47 @@
 <?php
-
-if (!function_exists('curl_init')) {
-    throw new Exception('CS-Cart API Class needs the CURL PHP extension.');
-}
-if (!function_exists('json_decode')) {
-    throw new Exception('CS-Cart API Class needs the JSON PHP extension.');
-}
+declare(strict_types=1);
 
 class CSCartApi {
 
-    const VERSION = '0.2';
-
-    const ERROR_API_CALLING = 'You have to specify a method (eg. POST, PUT, ...) and a correct object url to call the API';
+    const VERSION = '0.3';
     const ERROR_CURL_ERROR = 'HTTP error while calling the API. Error code and message: ';
-    const ERROR_CSCART_API_MESSAGE = 'Message from CS-Cart API: ';
+	const ERROR_JSON_ERROR = 'JSON Error: ';
 
-    public static $CURL_OPTS = array(
-        CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 60,
-        CURLOPT_USERAGENT => 'cscart-api-php-beta-0.1',
-    );
+    private static $CURL_OPTS = [
+        CURLOPT_CONNECTTIMEOUT  => 10,
+        CURLOPT_RETURNTRANSFER  => true,
+        CURLOPT_TIMEOUT         => 60,
+        CURLOPT_USERAGENT       => 'csCart-api-php-' . self::VERSION,
+    ];
+
     protected $apiKey;
     protected $userLogin;
     protected $apiUrl;
-
-    public function __construct($config) {
-        $this->setUserLogin($config['user_login']);
-        $this->setApiKey($config['api_key']);
-        $this->setApiUrl($config['api_url']);
-    }
-
-    public function setApiKey($apiKey) {
+	/**
+	 * @param $apiKey
+	 * @return $this
+	 */
+	public function setApiKey($apiKey): self {
         $this->apiKey = $apiKey;
+        return $this;
     }
 
-    public function setUserLogin($userLogin) {
+	/**
+	 * @param $userLogin
+	 * @return $this
+	 */
+	public function setUserLogin($userLogin): self {
         $this->userLogin = $userLogin;
+        return $this;
     }
 
-    public function setApiUrl($apiUrl) {
+	/**
+	 * @param $apiUrl
+	 * @return $this
+	 */
+	public function setApiUrl($apiUrl): self {
         $this->apiUrl = trim($apiUrl, '/').'/api/';
+        return $this;
     }
 
     public function getApiKey() {
@@ -55,112 +56,171 @@ class CSCartApi {
         return $this->apiUrl;
     }
 
-    public function api($method, $objectUrl, $data = '', $params = array()) {
-        if (!empty($method) && !empty($objectUrl)) {
-            return $this->makeRequest($objectUrl, $method, $data, $params);
-        } else {
-            throw new Exception(self::ERROR_API_CALLING);
-        }
+	/**
+	 * @param string $method
+	 * @param string $url
+	 * @param string $data
+	 * @param array $params
+	 * @return stdClass
+	 * @throws cscartException
+	 */
+	public function api(string $method, string $url, string $data = '', $params = []): stdClass {
+        return $this->makeRequest($url, $method, $data, $params);
     }
 
-    protected function makeRequest($objectUrl, $method, $data = '', $params = array()) {
-        $ch = curl_init();
+	/**
+	 * @param string $objectUrl
+	 * @param string $method
+	 * @param $data
+	 * @param array $params
+	 * @return stdClass|null
+	 * @throws cscartException
+	 */
+	protected function makeRequest(string $objectUrl, string $method, $data = '', $params = []) {
+
+		$ch = curl_init();
 
         $opts = self::$CURL_OPTS;
-        
-        $opts[CURLOPT_URL] = $this->initUrl($objectUrl, $params);
-        $opts[CURLOPT_USERPWD] = $this->getAuthString();
-        //die($this->initUrl($params));
+
+        $this->setOpts($opts, CURLOPT_URL, $this->initUrl($objectUrl, $params));
+		$this->setOpts($opts, CURLOPT_USERPWD, $this->getAuthString());
         $this->setHeader($opts, 'Content-Type: application/json');
-
-
-        if ($method == 'POST' || $method == 'PUT') {
-            $postdata = $this->generatePostData($data);
-        } else {
-            unset($data);
-        }
 
         switch ($method) {
             case 'GET':
                 break;
             case 'POST':
-                $opts[CURLOPT_CUSTOMREQUEST] = 'POST';
-                $opts[CURLOPT_RETURNTRANSFER] = TRUE;
-                $opts[CURLOPT_POSTFIELDS] = $postdata;
-                $this->setHeader($opts, 'Content-Length: ' . strlen($postdata));
-                break;
-            case 'PUT':
-                $opts[CURLOPT_CUSTOMREQUEST] = 'PUT';
-                $opts[CURLOPT_RETURNTRANSFER] = TRUE;
-                $opts[CURLOPT_POSTFIELDS] = $postdata;
-                $this->setHeader($opts, 'Content-Length: ' . strlen($postdata));
+	        case 'PUT':
+
+                $postData = json_encode($data);
+
+				$this->setOpts($opts, CURLOPT_CUSTOMREQUEST, $method)
+		            ->setOpts($opts, CURLOPT_RETURNTRANSFER, true)
+		            ->setOpts($opts,CURLOPT_POSTFIELDS, $postData);
+                $this->setHeader($opts, 'Content-Length: ' . strlen($postData));
                 break;
             case 'DELETE':
-                $opts[CURLOPT_CUSTOMREQUEST] = 'DELETE';
+				$this->setOpts($opts, CURLOPT_CUSTOMREQUEST, $method);
                 break;
+
+	        default:
+				throw new cscartException('Unknown method: ' . $method);
         }
 
         curl_setopt_array($ch, $opts);
         $result = curl_exec($ch);
 
-        if ($result === false) {
-            throw new Exception(self::ERROR_CURL_ERROR.curl_errno($ch).': '.curl_error($ch));
-            curl_close($ch);
+        if (empty($result)) {
+            throw new cscartException(self::ERROR_CURL_ERROR . curl_errno($ch) . ' : ' . curl_error($ch));
         }
+
         curl_close($ch);
-        return $this->parseResult($result);
-    }
-    
-    protected function initUrl($objectUrl, $params)
-    {
-        $params = http_build_query($params);
-        $params = $params? '?'.$params:'';
-        return $this->apiUrl . $objectUrl . $params;
+
+        $json = json_decode($result, false);
+
+        if(json_last_error() === JSON_ERROR_NONE) {
+			return $json;
+        }
+
+        throw new cscartException(self::ERROR_JSON_ERROR . json_last_error_msg());
+
     }
 
-    protected function getAuthString() {
+	/**
+	 * @param string $url
+	 * @param array $params
+	 * @return string
+	 */
+	private function initUrl(string $url, array $params): string {
+
+        $query  = http_build_query($params);
+		$query = $query ? '?' . $query : '';
+
+        return $this->getApiUrl() . $url . $query;
+
+    }
+
+	/**
+	 * @return string
+	 */
+	protected function getAuthString(): string {
         return $this->userLogin . ":" . $this->apiKey;
     }
 
-    protected function setHeader(&$opts, $headerString) {
+	/**
+	 * @param $opts
+	 * @param $headerString
+	 */
+	protected function setHeader(&$opts, $headerString) {
         $opts[CURLOPT_HTTPHEADER][] = $headerString;
     }
 
-    protected function generatePostData($data) {
-        return json_encode($data);
+	/**
+	 * @param array $opts
+	 * @param $option
+	 * @param $value
+	 * @return $this
+	 */
+	private function setOpts(array &$opts, $option, $value): self {
+		$opts[$option] = $value;
+		return $this;
     }
-    
-    protected function parseResult($jsonResult){
-        $result = (array)json_decode($jsonResult);
-        if (!empty($result['message'])) {
-            throw new Exception(self::ERROR_CSCART_API_MESSAGE.$result['message']);
-        } else {
-          return $result;
-        }
-    }
-    
-    public function get($objectUrl, $params = array()){
+
+	/**
+	 * @param string $objectUrl
+	 * @param array $params
+	 * @return stdClass
+	 * @throws cscartException
+	 */
+	public function get(string $objectUrl, array $params = []): stdClass {
         return $this->makeRequest($objectUrl, 'GET', '', $params);
     }
 
-    public function update($objectUrl, $data){
+	/**
+	 * @param string $objectUrl
+	 * @param array $data
+	 * @return stdClass
+	 * @throws cscartException
+	 */
+	public function update(string $objectUrl, array $data): stdClass {
         return $this->makeRequest($objectUrl, 'PUT', $data);
     }
 
-    public function create($objectUrl, $data){
+	/**
+	 * @param string $objectUrl
+	 * @param array $data
+	 * @return stdClass
+	 * @throws cscartException
+	 */
+	public function create(string $objectUrl, array $data): stdClass {
         return $this->makeRequest($objectUrl, 'POST', $data);
     }
-    
-    public function delete($objectUrl){
+
+	/**
+	 * @param string $objectUrl
+	 * @return stdClass
+	 * @throws cscartException
+	 */
+	public function delete(string $objectUrl): stdClass {
         return $this->makeRequest($objectUrl, 'DELETE');
     }
-    
-    public function getApiVersion(){
+
+	/**
+	 * @return string
+	 */
+	public function getApiVersion(): string {
         return self::VERSION;
     }
-    
-    public function getCartVersion(){
-        return str_replace("CS-Cart: version ","",strip_tags(file_get_contents($this->apiUrl.'?version')));
+
+	/**
+	 * @return string
+	 * @throws cscartException
+	 */
+	public function getCartVersion(): string {
+
+		$version = $this->makeRequest($this->apiUrl.'?version', 'GET');
+        return str_replace("CS-Cart: version ","", strip_tags($version));
+
     }
 
 }
